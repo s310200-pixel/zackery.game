@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>點陣連線遊戲</title>
+  
+  <!-- PWA 相關設定 -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#007bff">
+  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/5260/5260498.png">
+
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 10px 0; background-color: #f4f4f9; touch-action: manipulation; }
+    h1 { margin-bottom: 5px; color: #333; font-size: 1.5rem; }
+    
+    .rulescard { background: #fff; border-left: 4px solid #dc3545; padding: 10px 14px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); max-width: 360px; width: 90%; margin-bottom: 15px; }
+    .rulescard h3 { margin: 0 0 6px 0; color: #dc3545; font-size: 0.95rem; }
+    .rulescard h4 { margin: 6px 0 2px 0; color: #333; font-size: 0.85rem; }
+    .rulescard ol, .rulescard ul { margin: 0; padding-left: 18px; font-size: 0.8rem; color: #444; line-height: 1.3; }
+
+    .controls { margin-bottom: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+    #info { font-size: 1rem; font-weight: bold; margin-bottom: 10px; color: #007bff; text-align: center; }
+    #gamecontainer { position: relative; width: 320px; height: 320px; background: #fff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+    canvas { position: absolute; top: 0; left: 0; z-index: 1; }
+    .grid { display: grid; width: 100%; height: 100%; position: absolute; z-index: 2; }
+    .dotbtn { background: none; border: none; outline: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+    .dot { width: 16px; height: 16px; background-color: #ccc; border-radius: 50%; transition: all 0.2s; position: relative; }
+    .dotbtn:hover .dot:not(.banned) { background-color: #007bff; transform: scale(1.3); }
+    .dot.visited { background-color: #28a745; }
+    .dot.current { background-color: #dc3545; transform: scale(1.4); box-shadow: 0 0 8px rgba(220,53,69,0.8); }
+    .dot.valid { background-color: #ffc107; cursor: pointer; }
+    .dot.startselected { background-color: #17a2b8; transform: scale(1.3); }
+    
+    .dot.banned { background-color: #343a40; transform: scale(1.1); cursor: not-allowed; }
+    .dot.banned::after { content: '✕'; color: #fff; font-size: 10px; font-weight: bold; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+
+    button.resetbtn { padding: 6px 12px; font-size: 0.9rem; border: none; background-color: #6c757d; color: white; border-radius: 4px; cursor: pointer; }
+    button.resetbtn:hover { background-color: #5a6268; }
+    select { padding: 6px 8px; font-size: 0.9rem; border-radius: 4px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+
+  <h1>點陣連線遊戲</h1>
+
+  <div class="rulescard">
+    <h3>📜 遊戲規則說明</h3>
+    
+    <h4>一、 動手步驟</h4>
+    <ol>
+      <li><b>禁手階段</b>：雙方玩家依序選擇格子進行<b>封鎖（Ban）</b>。</li>
+      <li><b>起手第一步</b>：玩家 A 選點起飛並連線至相鄰點。</li>
+      <li><b>接續連線</b>：下一位玩家從上一玩家「終點」繼續延伸。</li>
+      <li><b>勝負判定</b>：當移動後使得對方無路可走，該玩家獲勝。</li>
+    </ol>
+
+    <h4>二、 限制條件</h4>
+    <ul>
+      <li>走過或被封鎖的點<b>全局不可重複造訪</b>。</li>
+      <li>連線僅能選擇當前位置相鄰（含斜角 8 方向）的未用點。</li>
+    </ul>
+  </div>
+  
+  <div class="controls">
+    <label for="sizeselect">盤面：</label>
+    <select id="sizeselect" onchange="init()">
+      <option value="3">3 x 3</option>
+      <option value="5">5 x 5</option>
+      <option value="7">7 x 7</option>
+    </select>
+
+    <label for="modeselect">模式：</label>
+    <select id="modeselect" onchange="init()">
+      <option value="pve">單人模式 AI</option>
+      <option value="pvp">雙人對戰</option>
+    </select>
+    <button class="resetbtn" onclick="init()">重新開始</button>
+  </div>
+
+  <div id="info">請 玩家 A 選擇要封鎖(Ban)的格子</div>
+  
+  <div id="gamecontainer">
+    <canvas id="linecanvas" width="320" height="320"></canvas>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <script>
+    // 註冊 PWA Service Worker (支援離線遊玩)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(() => console.log('PWA Service Worker 註冊成功！'))
+          .catch(err => console.log('Service Worker 註冊失敗: ', err));
+      });
+    }
+
+    const grid = document.getElementById('grid');
+    const canvas = document.getElementById('linecanvas');
+    const ctx = canvas.getContext('2d');
+    const info = document.getElementById('info');
+    const modeselect = document.getElementById('modeselect');
+    const sizeselect = document.getElementById('sizeselect');
+
+    let gridsize = 3;
+    let cellsize = 320 / 3;
+    let currentplayer = 'A'; 
+    let currentdot = null;   
+    let tempstartdot = null; 
+    let visited = [];
+    let gameover = false;
+    let isai = false;
+
+    let phase = 'ban_a';
+
+    function getpos(r, c) {
+      return { x: c * cellsize + cellsize / 2, y: r * cellsize + cellsize / 2 };
+    }
+
+    function init() {
+      gridsize = parseInt(sizeselect.value);
+      cellsize = 320 / gridsize;
+
+      grid.style.gridTemplateColumns = `repeat(${gridsize}, 1fr)`;
+      grid.style.gridTemplateRows = `repeat(${gridsize}, 1fr)`;
+
+      grid.innerHTML = '';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      currentplayer = 'A';
+      currentdot = null;
+      tempstartdot = null;
+      visited = Array(gridsize).fill(null).map(() => Array(gridsize).fill(false));
+      gameover = false;
+      isai = (modeselect.value === 'pve');
+      phase = 'ban_a';
+      
+      info.innerText = '請 玩家 A 選擇要封鎖(Ban)的格子';
+
+      for (let r = 0; r < gridsize; r++) {
+        for (let c = 0; c < gridsize; c++) {
+          const btn = document.createElement('button');
+          btn.className = 'dotbtn';
+          
+          const dot = document.createElement('div');
+          dot.className = 'dot';
+          dot.id = `dot-${r}-${c}`;
+          
+          btn.appendChild(dot);
+          btn.addEventListener('click', () => clickdot(r, c));
+          grid.appendChild(btn);
+        }
+      }
+    }
+
+    function clickdot(r, c) {
+      if (gameover) return;
+
+      if (phase === 'ban_a') {
+        bandot(r, c);
+        phase = 'ban_b';
+
+        if (isai) {
+          info.innerText = 'AI 選擇封鎖格子中...';
+          setTimeout(aiban, 400);
+        } else {
+          info.innerText = '請 玩家 B 選擇要封鎖(Ban)的格子';
+        }
+        return;
+      }
+
+      if (phase === 'ban_b') {
+        if (visited[r][c]) return;
+        bandot(r, c);
+        startplay();
+        return;
+      }
+
+      if (isai && currentplayer === 'B') return;
+
+      if (!tempstartdot && !currentdot) {
+        if (visited[r][c]) return;
+        tempstartdot = {r, c};
+        const el = document.getElementById(`dot-${r}-${c}`);
+        el.className = 'dot startselected';
+        info.innerText = '請選擇第一條線的「終點」（完成第一步）';
+        hiltstart(r, c);
+        return;
+      }
+
+      if (tempstartdot && !currentdot) {
+        if (chkmove(tempstartdot.r, tempstartdot.c, r, c)) {
+          visited[tempstartdot.r][tempstartdot.c] = true;
+          const startel = document.getElementById(`dot-${tempstartdot.r}-${tempstartdot.c}`);
+          startel.className = 'dot visited';
+
+          draw(tempstartdot, {r, c});
+          seldot(r, c);
+          tempstartdot = null;
+
+          if (!hasmove(r, c)) {
+            gameover = true;
+            const winnername = isai ? (currentplayer === 'A' ? '玩家 A' : 'AI') : `玩家 ${currentplayer}`;
+            info.innerText = `無路可走！${winnername} 獲勝！`;
+            return;
+          }
+
+          swplayer();
+        }
+        return;
+      }
+
+      if (chkmove(currentdot.r, currentdot.c, r, c)) {
+        move(r, c);
+      }
+    }
+
+    function bandot(r, c) {
+      visited[r][c] = true;
+      const el = document.getElementById(`dot-${r}-${c}`);
+      el.className = 'dot banned';
+    }
+
+    function aiban() {
+      let bestpoint = null;
+      let maxneighbors = -1;
+
+      for (let r = 0; r < gridsize; r++) {
+        for (let c = 0; c < gridsize; c++) {
+          if (!visited[r][c]) {
+            let neighbors = getmoves(r, c).length;
+            if (neighbors > maxneighbors) {
+              maxneighbors = neighbors;
+              bestpoint = { r, c };
+            }
+          }
+        }
+      }
+
+      if (bestpoint) {
+        bandot(bestpoint.r, bestpoint.c);
+      }
+      startplay();
+    }
+
+    function startplay() {
+      phase = 'play';
+      currentplayer = 'A';
+      info.innerText = isai ? '請選擇第一條線的「起點」' : '請 玩家 A 選擇第一條線的「起點」';
+    }
+
+    function move(r, c) {
+      draw(currentdot, {r, c});
+      seldot(r, c);
+
+      if (!hasmove(r, c)) {
+        gameover = true;
+        const winnername = isai ? (currentplayer === 'A' ? '玩家 A' : 'AI') : `玩家 ${currentplayer}`;
+        info.innerText = `對手無路可走！${winnername} 獲勝！`;
+        return;
+      }
+
+      swplayer();
+    }
+
+    function swplayer() {
+      currentplayer = currentplayer === 'A' ? 'B' : 'A';
+      
+      if (isai) {
+        if (currentplayer === 'B') {
+          info.innerText = 'AI 思考中...';
+          setTimeout(aimove, 400);
+        } else {
+          info.innerText = '輪到 玩家 A 移動';
+          hilt();
+        }
+      } else {
+        info.innerText = `輪到 玩家 ${currentplayer} 移動`;
+        hilt();
+      }
+    }
+
+    function aimove() {
+      if (gameover) return;
+
+      const validmoves = getmoves(currentdot.r, currentdot.c);
+      if (validmoves.length === 0) return;
+
+      let bestscore = -Infinity;
+      let bestmove = null;
+
+      const maxdepth = gridsize === 3 ? 10 : (gridsize === 5 ? 4 : 2);
+
+      for (const moveobj of validmoves) {
+        visited[moveobj.r][moveobj.c] = true;
+        let score = mmx(moveobj, 0, false, maxdepth, -Infinity, Infinity);
+        visited[moveobj.r][moveobj.c] = false;
+
+        if (score > bestscore) {
+          bestscore = score;
+          bestmove = moveobj;
+        }
+      }
+
+      if (bestmove) {
+        move(bestmove.r, bestmove.c);
+      }
+    }
+
+    function mmx(curr, depth, ismax, maxdepth, alpha, beta) {
+      const moveslist = getmoves(curr.r, curr.c);
+
+      if (moveslist.length === 0) {
+        return ismax ? (-100 + depth) : (100 - depth);
+      }
+
+      if (depth >= maxdepth) {
+        return ismax ? moveslist.length : -moveslist.length;
+      }
+
+      if (ismax) {
+        let maxeval = -Infinity;
+        for (const m of moveslist) {
+          visited[m.r][m.c] = true;
+          let evaluation = mmx(m, depth + 1, false, maxdepth, alpha, beta);
+          visited[m.r][m.c] = false;
+          maxeval = Math.max(maxeval, evaluation);
+          alpha = Math.max(alpha, evaluation);
+          if (beta <= alpha) break;
+        }
+        return maxeval;
+      } else {
+        let mineval = Infinity;
+        for (const m of moveslist) {
+          visited[m.r][m.c] = true;
+          let evaluation = mmx(m, depth + 1, true, maxdepth, alpha, beta);
+          visited[m.r][m.c] = false;
+          mineval = Math.min(mineval, evaluation);
+          beta = Math.min(beta, evaluation);
+          if (beta <= alpha) break;
+        }
+        return mineval;
+      }
+    }
+
+    function chkmove(r1, c1, r2, c2) {
+      if (visited[r2][c2]) return false;
+      const dr = Math.abs(r1 - r2);
+      const dc = Math.abs(c1 - c2);
+      return (dr <= 1 && dc <= 1) && !(dr === 0 && dc === 0);
+    }
+
+    function getmoves(r, c) {
+      const movesarr = [];
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < gridsize && nc >= 0 && nc < gridsize && !visited[nr][nc]) {
+            movesarr.push({ r: nr, c: nc });
+          }
+        }
+      }
+      return movesarr;
+    }
+
+    function hasmove(r, c) {
+      return getmoves(r, c).length > 0;
+    }
+
+    function seldot(r, c) {
+      if (currentdot) {
+        const prevel = document.getElementById(`dot-${currentdot.r}-${currentdot.c}`);
+        if (prevel) prevel.className = 'dot visited';
+      }
+      currentdot = {r, c};
+      visited[r][c] = true;
+
+      const currel = document.getElementById(`dot-${r}-${c}`);
+      if (currel) currel.className = 'dot current';
+    }
+
+    function draw(from, to) {
+      const p1 = getpos(from.r, from.c);
+      const p2 = getpos(to.r, to.c);
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.strokeStyle = currentplayer === 'A' ? '#007bff' : '#dc3545';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+
+    function hiltstart(sr, sc) {
+      for (let r = 0; r < gridsize; r++) {
+        for (let c = 0; c < gridsize; c++) {
+          if (r === sr && c === sc) continue;
+          if (visited[r][c]) continue;
+          const el = document.getElementById(`dot-${r}-${c}`);
+          if (chkmove(sr, sc, r, c)) {
+            el.className = 'dot valid';
+          } else {
+            el.className = 'dot';
+          }
+        }
+      }
+    }
+
+    function hilt() {
+      for (let r = 0; r < gridsize; r++) {
+        for (let c = 0; c < gridsize; c++) {
+          if (!visited[r][c]) {
+            const el = document.getElementById(`dot-${r}-${c}`);
+            if (chkmove(currentdot.r, currentdot.c, r, c)) {
+              el.className = 'dot valid';
+            } else {
+              el.className = 'dot';
+            }
+          }
+        }
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
